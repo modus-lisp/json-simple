@@ -24,67 +24,88 @@
                            :format-control (concatenate 'string fmt " at position ~D")
                            :format-arguments (append args (list pos))))
 
+(deftype %text () '(simple-array character (*)))
+
+(deftype %octets () '(simple-array (unsigned-byte 8) (*)))
+
 (defun %utf8-decode (octets start end)
   "Decode OCTETS[START,END) as strict UTF-8 into a fresh simple-string."
+  (declare (type %octets octets) (type fixnum start end)
+           (optimize speed (safety 1)))
   (let ((out (make-string (- end start)))
         (i start) (o 0))
-    (flet ((bad () (%parse-fail i "invalid UTF-8"))
+    (declare (type %text out) (type fixnum i o))
+    (flet ((bad () (%parse-fail (- i start) "invalid UTF-8"))
            (cont (k)
+             (declare (type fixnum k))
              (let ((b (if (< k end) (aref octets k) 0)))
                (if (= (logand b #xC0) #x80) (logand b #x3F) nil))))
       (loop while (< i end) do
-        (let ((b (aref octets i)) (code 0) (len 0))
-          (cond ((< b #x80) (setq code b len 1))
-                ((= (logand b #xE0) #xC0) (setq code (logand b #x1F) len 2))
-                ((= (logand b #xF0) #xE0) (setq code (logand b #x0F) len 3))
-                ((= (logand b #xF8) #xF0) (setq code (logand b #x07) len 4))
-                (t (bad)))
-          (loop for k from 1 below len do
-            (let ((c (cont (+ i k))))
-              (unless c (bad))
-              (setq code (logior (ash code 6) c))))
-          ;; Overlong forms, surrogates and out-of-range code points.
-          (when (or (and (= len 2) (< code #x80))
-                    (and (= len 3) (< code #x800))
-                    (and (= len 4) (< code #x10000))
-                    (> code #x10FFFF)
-                    (<= #xD800 code #xDFFF))
-            (bad))
-          (setf (char out o) (code-char code))
-          (incf o)
-          (incf i len))))
-    (subseq out 0 o)))
+        (let ((b (aref octets i)))
+          (if (< b #x80)
+              ;; ASCII, the common case: nothing to check.
+              (progn (setf (schar out o) (code-char b)) (incf o) (incf i))
+              (let ((code 0) (len 0))
+                (declare (type fixnum code len))
+                (cond ((= (logand b #xE0) #xC0) (setq code (logand b #x1F) len 2))
+                      ((= (logand b #xF0) #xE0) (setq code (logand b #x0F) len 3))
+                      ((= (logand b #xF8) #xF0) (setq code (logand b #x07) len 4))
+                      (t (bad)))
+                (loop for k of-type fixnum from 1 below len do
+                  (let ((c (cont (+ i k))))
+                    (unless c (bad))
+                    (setq code (logior (ash code 6) (the fixnum c)))))
+                ;; Overlong forms, surrogates and out-of-range code points.
+                (when (or (and (= len 2) (< code #x80))
+                          (and (= len 3) (< code #x800))
+                          (and (= len 4) (< code #x10000))
+                          (> code #x10FFFF)
+                          (<= #xD800 code #xDFFF))
+                  (bad))
+                (setf (schar out o) (code-char code))
+                (incf o)
+                (incf i len))))))
+    (if (= o (length out)) out (subseq out 0 o))))
 
-(defun %input-string (in)
-  "IN (string, octet vector, stream or pathname) as a simple-string of text."
+(defun %input-string (in start end)
+  "IN (string, octet vector, stream or pathname) as a simple-string of text;
+   START and END bound a string or octet vector."
   (etypecase in
-    (simple-string in)
-    (string (coerce in 'simple-string))
-    ((vector (unsigned-byte 8)) (%utf8-decode in 0 (length in)))
+    (string
+     (let ((end (or end (length in))))
+       (if (and (typep in '%text) (= start 0) (= end (length in)))
+           in
+           (coerce (subseq in start end) '%text))))
+    (%octets (%utf8-decode in start (or end (length in))))
+    ((vector (unsigned-byte 8))
+     (%utf8-decode (coerce (subseq in start end) '%octets) 0 (- (or end (length in)) start)))
     (stream
      (if (subtypep (stream-element-type in) 'character)
          (with-output-to-string (s)
            (loop for c = (read-char in nil nil) while c do (write-char c s)))
          (let ((buf (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
            (loop for b = (read-byte in nil nil) while b do (vector-push-extend b buf))
-           (%utf8-decode buf 0 (length buf)))))
+           (%utf8-decode (coerce buf '%octets) 0 (length buf)))))
     (pathname
      (with-open-file (s in :element-type '(unsigned-byte 8))
-       (%input-string s)))))
+       (%input-string s 0 nil)))))
 
 (defun parse (in &key (max-depth 128) (object-type :hash-table)
-                      (true t) (false nil) (null 'null))
+                      (true t) (false nil) (null 'null) (start 0) end)
   "Read one JSON value from IN -- a string, a (vector (unsigned-byte 8)) of
    UTF-8, a character or binary stream, or a pathname.  See the file header for
    the mapping; OBJECT-TYPE is :HASH-TABLE (default) or :ALIST, and TRUE /
    FALSE / NULL are the values those literals read as.  MAX-DEPTH bounds the
-   nesting of arrays and objects (NIL = no bound).  Signals JSON-PARSE-ERROR."
-  (let* ((s (%input-string in))
+   nesting of arrays and objects (NIL = no bound).  START and END select part
+   of a string or octet vector (a frame inside a larger buffer); error
+   positions count from START.  Signals JSON-PARSE-ERROR."
+  (let* ((s (%input-string in start end))
          (end (length s))
          (pos 0)
          (depth 0)
          (max-depth (or max-depth most-positive-fixnum)))
-    (declare (simple-string s) (fixnum end pos depth))
+    (declare (type %text s) (fixnum end pos depth max-depth)
+             (optimize speed (safety 1)))
     (labels ((ws-p (c)
                (or (char= c #\Space) (char= c #\Newline) (char= c #\Return) (char= c #\Tab)))
              (skip-ws ()
@@ -206,11 +227,11 @@
                               (#\u
                                (let ((at (- pos 2)) (code (hex4)))
                                  ;; A high surrogate must be followed by \u and a low
-                                 ;; surrogate (one character, U+10000..U+10FFFF) or it
-                                 ;; is an error; a lone LOW surrogate is kept as is.
-                                 ;; Both exactly as jzon.
-                                 ;; Combined with +, not jzon's LOGIOR, which drops
-                                 ;; planes 2-16 (\uDBFF\uDFFF read as U+FFFFF).
+                                 ;; surrogate (together one character, U+10000..U+10FFFF);
+                                 ;; any other surrogate is an error, so every string read
+                                 ;; is valid Unicode and encodes to UTF-8.  (jzon keeps a
+                                 ;; lone LOW surrogate, and combines pairs with LOGIOR,
+                                 ;; which drops planes 2-16.)
                                  (cond
                                    ((<= #xD800 code #xDBFF)
                                     (unless (and (< (+ pos 1) end)
@@ -221,7 +242,9 @@
                                     (let ((lo (hex4)))
                                       (unless (<= #xDC00 lo #xDFFF)
                                         (%parse-fail at "lone surrogate"))
-                                      (setq code (+ #x10000 (ash (- code #xD800) 10) (- lo #xDC00))))))
+                                      (setq code (+ #x10000 (ash (- code #xD800) 10) (- lo #xDC00)))))
+                                   ((<= #xDC00 code #xDFFF)
+                                    (%parse-fail at "lone surrogate")))
                                  (write-char (code-char code) out)))
                               (t (%parse-fail (1- pos) "bad escape \\~A" e)))))))))))
              (digits ()

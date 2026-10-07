@@ -41,8 +41,9 @@ Object keys follow jzon's coercion: symbols are downcased unless they contain lo
 
 ## API
 
-- **`(parse in &key max-depth object-type true false null)`**
+- **`(parse in &key max-depth object-type true false null start end)`**
   - `in`: a string, a `(vector (unsigned-byte 8))` of UTF-8, a stream, or a pathname.
+  - `start`/`end`: parse only that part of a string or octet vector, such as one frame in a network buffer. Error positions count from `start`.
   - Parsing is strict RFC 8259.
   - Signals `json-parse-error`; `json-parse-error-position` gives the character index where parsing failed.
 - **`(stringify value &key stream pretty)`**
@@ -66,7 +67,7 @@ Object keys follow jzon's coercion: symbols are downcased unless they contain lo
 ## Compatibility with jzon
 
 `test/oracle.lisp` runs json-simple against jzon itself:
-- **JSONTestSuite:** all 318 files are accepted or rejected the same way, and accepted ones parse to equal values.
+- **JSONTestSuite:** all 318 files are accepted or rejected the same way, and accepted ones parse to equal values, except for the five listed below.
 - **Random doubles:** 20,000 (subnormals included) print identically and read back exactly.
 - **Random value trees:** 3,000, compact and pretty, stringify identically, and jzon's text parses back to equal values.
 - **Number edge cases:** range limits, `-0`, leading zeros.
@@ -74,10 +75,10 @@ Object keys follow jzon's coercion: symbols are downcased unless they contain lo
 Run it on SBCL with `./run-tests.sh`.
 
 Known differences:
-- **Surrogate pairs above U+1FFFF:** jzon combines a `\uD8xx\uDCxx` pair with `logior` instead of `+`. Planes 2–16 come out 0x10000 short, so `􏿿` reads as U+FFFFF. json-simple decodes these correctly; the oracle checks those two suite files against the right answer.
+- **Surrogate pairs above U+1FFFF:** jzon combines a `\uD8xx\uDCxx` pair with `logior` instead of `+`. Planes 2–16 come out 0x10000 short, so `"\uDBFF\uDFFF"` reads as U+FFFFF. json-simple decodes these correctly; the oracle checks those two suite files against the right answer.
 - **`replacer`, `coerce-key` and the streaming writer/parser APIs:** not provided.
 - **CLOS instances and structures:** not walked into objects; build a hash table.
-- **Lone surrogates:** handled exactly as jzon does. A lone high surrogate is an error; a lone low surrogate is kept as is.
+- **Lone surrogates:** every lone surrogate escape is an error, so each string json-simple returns is valid Unicode and encodes to UTF-8 (as octet input already must). jzon errors on a lone high surrogate but keeps a lone low one; the oracle checks that json-simple rejects those three suite files.
 
 ## License
 

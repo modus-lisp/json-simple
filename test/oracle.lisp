@@ -65,6 +65,14 @@
   '(("y_string_last_surrogates_1_and_2.json" . #x10FFFF)
     ("y_string_unicode_U+10FFFE_nonchar.json" . #x10FFFE)))
 
+(defparameter *jzon-lenient*
+  ;; jzon keeps a lone low surrogate; json-simple rejects every lone surrogate,
+  ;; so each string it returns is valid Unicode.  JSONTestSuite leaves these
+  ;; to the implementation (i_ files).
+  '("i_object_key_lone_2nd_surrogate.json"
+    "i_string_incomplete_surrogate_pair.json"
+    "i_string_lone_second_surrogate.json"))
+
 (defparameter *jzon-slow*
   ;; jzon builds 10^10000000 to read [123e-10000000]: two minutes on a fast
   ;; machine.  Its answer, recorded: an error (nonzero underflow).
@@ -86,6 +94,10 @@
                            (cdr (assoc (file-namestring f) *jzon-wrong* :test #'string=))))
                    (incf agree)
                    (fail "suite ~A: json-simple ~S" (file-namestring f) p)))
+              ((member (file-namestring f) *jzon-lenient* :test #'string=)
+               (if (eq (car p) :error)
+                   (incf agree)
+                   (fail "suite ~A: json-simple should reject, got ~S" (file-namestring f) p)))
               ((and (eq (car j) :error) (eq (car p) :error)) (incf agree))
               ((and (eq (car j) :ok) (eq (car p) :ok) (json-equal (cadr j) (cadr p))) (incf agree))
               (t (fail "suite ~A: jzon ~S, json-simple ~S" (file-namestring f) (car j) (car p))))))
@@ -188,10 +200,41 @@
             (fail "number ~S: jzon ~S json-simple ~S" c j p))))
     (format t "~&numbers: ~D/~D agree~%" ok (length cases))))
 
+(defun test-slices ()
+  "PARSE with :START/:END on a frame inside a larger buffer reads exactly what
+   the frame alone reads, including where it fails."
+  (let ((n 0) (ok 0))
+    (flet ((same (a b) (or (and (eq (car a) :error) (eq (car b) :error))
+                           (and (eq (car a) :ok) (eq (car b) :ok) (json-equal (cadr a) (cadr b)))))
+           (pos-of (thunk) (handler-case (progn (funcall thunk) nil)
+                             (json-simple:json-parse-error (e) (json-simple:json-parse-error-position e)))))
+      (dolist (f (and (suite-dir) (directory (merge-pathnames "*.json" (suite-dir)))))
+        (let* ((bytes (read-octets f))
+               (pad (concatenate '(vector (unsigned-byte 8)) #(123 34 120 34 58) bytes #(125 32 93)))
+               (pad (coerce pad '(simple-array (unsigned-byte 8) (*)))))
+          (incf n)
+          (if (and (same (outcome #'json-simple:parse bytes)
+                         (outcome (lambda (b) (json-simple:parse b :start 5 :end (+ 5 (length bytes)))) pad))
+                   (eql (pos-of (lambda () (json-simple:parse bytes)))
+                        (pos-of (lambda () (json-simple:parse pad :start 5 :end (+ 5 (length bytes)))))))
+              (incf ok)
+              (fail "slice ~A differs from the whole file" (file-namestring f)))))
+      (dolist (c '(("xx[1,2]yy" 2 7 #(1 2)) ("[\"a\"]" 0 nil #("a")) ("  {}" 2 nil :empty)))
+        (incf n)
+        (let ((v (outcome (lambda (s) (json-simple:parse s :start (second c) :end (third c)
+                                                           :object-type :alist :null :null))
+                          (first c))))
+          (if (and (eq (car v) :ok)
+                   (if (eq (fourth c) :empty) (null (cadr v)) (equalp (cadr v) (fourth c))))
+              (incf ok)
+              (fail "string slice ~S: ~S" c v)))))
+    (format t "~&slices: ~D/~D agree~%" ok n)))
+
 (defun run (&key (random 3000) (doubles 20000))
   (setq *failures* 0 *shown* 0)
   (test-suite)
   (test-numbers)
+  (test-slices)
   (test-doubles doubles)
   (test-random random)
   (format t "~&TOTAL FAILURES: ~D~%" *failures*)
