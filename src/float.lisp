@@ -96,6 +96,21 @@
                 (concatenate 'string (subseq d 0 1) "." (if (> n 1) (subseq d 1) "0")
                              "e" (princ-to-string e))))))))))
 
+(defun %rational-double (r)
+  "The double nearest the positive rational R (below the largest double), ties
+   to even; 0d0 when R rounds to zero.  Done here because CL:FLOAT need not be
+   correctly rounded and is not everywhere: SBCL 2.2.9 misrounds subnormals and
+   reads 4.9e-324 as 0.  Builds the result only from an integer below 2^54 by
+   SCALE-FLOAT to a normal double and, for subnormals, one exact multiply."
+  ;; E: the exponent of R's last significant bit -- 52 below its leading bit,
+  ;; or the subnormal floor 2^-1074.
+  (let* ((e (max (- (%floor-log2 r) 52) -1074))
+         (m (round (* r (if (>= e 0) (/ 1 (expt 2 e)) (expt 2 (- e)))))))   ; ties to even
+    (if (>= e -1022)
+        (scale-float (float m 1d0) e)
+        ;; M x 2^E is exactly representable; get there from a normal double.
+        (* (scale-float (float m 1d0) (+ e 1074)) least-positive-double-float))))
+
 (defun %decimal-double (negative mantissa ndigits exponent)
   "MANTISSA x 10^EXPONENT as a correctly rounded double, negated when NEGATIVE,
    or :OVERFLOW when it is out of range.  jzon's range rules: a value up to one
@@ -114,7 +129,7 @@
              (if (< r (+ (rational most-positive-double-float) (expt 2 971)))
                  (if negative (- most-positive-double-float) most-positive-double-float)
                  :overflow)
-             (let ((d (float r 1d0)))
+             (let ((d (%rational-double r)))
                (cond ((zerop d) :overflow)
                      (negative (- d))
                      (t d)))))))))

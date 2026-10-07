@@ -74,9 +74,11 @@
     "i_string_lone_second_surrogate.json"))
 
 (defparameter *jzon-slow*
-  ;; jzon builds 10^10000000 to read [123e-10000000]: two minutes on a fast
-  ;; machine.  Its answer, recorded: an error (nonzero underflow).
-  '(("i_number_real_underflow.json" :error)))
+  ;; Files jzon takes minutes (or, on SBCL 2.2.9, forever) to answer, with its
+  ;; answer recorded.  It builds 10^10000000 for [123e-10000000], and on 2.2.9
+  ;; never finishes [0.4e00669999...] (a 300-digit exponent).  Both: errors.
+  '(("i_number_real_underflow.json" :error)
+    ("i_number_huge_exp.json" :error)))
 
 (defun test-suite ()
   (let ((files (and (suite-dir) (directory (merge-pathnames "*.json" (suite-dir)))))
