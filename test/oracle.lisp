@@ -65,13 +65,19 @@
   '(("y_string_last_surrogates_1_and_2.json" . #x10FFFF)
     ("y_string_unicode_U+10FFFE_nonchar.json" . #x10FFFE)))
 
+(defparameter *jzon-slow*
+  ;; jzon builds 10^10000000 to read [123e-10000000]: two minutes on a fast
+  ;; machine.  Its answer, recorded: an error (nonzero underflow).
+  '(("i_number_real_underflow.json" :error)))
+
 (defun test-suite ()
   (let ((files (and (suite-dir) (directory (merge-pathnames "*.json" (suite-dir)))))
         (n 0) (agree 0))
     (dolist (f files)
       (incf n)
       (let* ((bytes (read-octets f))
-             (j (outcome #'com.inuoe.jzon:parse bytes))
+             (j (or (cdr (assoc (file-namestring f) *jzon-slow* :test #'string=))
+                    (outcome #'com.inuoe.jzon:parse bytes)))
              (p (outcome #'json-simple:parse bytes)))
         (cond ((assoc (file-namestring f) *jzon-wrong* :test #'string=)
                ;; jzon's own bug (see *JZON-WRONG*): check json-simple is right.
