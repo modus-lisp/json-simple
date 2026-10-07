@@ -22,9 +22,8 @@
     (if (< r (if (>= e 0) (expt 2 e) (/ 1 (expt 2 (- e))))) (1- e) e)))
 
 (defun %floor-log10 (r)
-  "The integer E with 10^E <= R < 10^(E+1), for a positive rational R.  The
-   estimate comes from the binary exponent, not from a float LOG, so it is
-   right on hosts whose LOG mishandles subnormals."
+  "The integer E with 10^E <= R < 10^(E+1), for a positive rational R,
+   estimated from the binary exponent and corrected exactly."
   (let ((e (floor (* (%floor-log2 r) 30103) 100000)))
     (loop while (< r (%expt10 e)) do (decf e))
     (loop while (>= r (%expt10 (1+ e))) do (incf e))
@@ -115,34 +114,7 @@
              (if (< r (+ (rational most-positive-double-float) (expt 2 971)))
                  (if negative (- most-positive-double-float) most-positive-double-float)
                  :overflow)
-             (let ((d (%rational-double r)))
+             (let ((d (float r 1d0)))
                (cond ((zerop d) :overflow)
                      (negative (- d))
                      (t d)))))))))
-
-(defun %rational-double (r)
-  "The double nearest the positive rational R (ties to even), 0d0 when it
-   rounds below the smallest subnormal.  Built from an exact 53-bit (or
-   subnormal-width) integer mantissa and SCALE-FLOAT, so the rounding does not
-   depend on the host's FLOAT of a rational.  R must be below the largest
-   double (the caller checks)."
-  (let* ((e2 (%floor-log2 r))
-         ;; Scale so the mantissa has 53 bits, but never below the subnormal
-         ;; grid 2^-1074.
-         (shift (max (- e2 52) -1074))
-         (m (round (* r (if (>= shift 0) (/ 1 (expt 2 shift)) (expt 2 (- shift)))))))
-    (when (= m (expt 2 53))               ; rounding carried into bit 54
-      (setq m (expt 2 52) shift (1+ shift)))
-    (if (zerop m)
-        0d0
-        (%scale2 (float m 1d0) shift))))
-
-(defun %scale2 (d k)
-  "D x 2^K, in steps of at most 2^-500 so no step needs a power of two outside
-   the double range: some hosts' SCALE-FLOAT builds 2^|K| as a double and
-   signals overflow for K below -1023 instead of producing a subnormal.  With D
-   an exact integer below 2^53 every step is exact, and the last one rounds
-   into the subnormal grid the caller already aligned to."
-  (loop while (< k -500) do
-    (setq d (* d (scale-float 1d0 -500)) k (+ k 500)))
-  (scale-float d k))
